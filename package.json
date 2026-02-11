@@ -1,0 +1,33 @@
+{
+  "name": "discord-bot",
+  "version": "1.0.0",
+  "description": "BloxBeam - Discord-integrated Roblox item delivery system",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "install:all": "npm install",
+    "start": "node discord-bot.mjs"
+   },
+  "dependencies": {
+    "axios": "^1.13.2",
+    "cors": "^2.8.5",
+    "discord.js": "^14.15.3",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "keywords": [
+    "discord",
+    "roblox",
+    "automation",
+    "delivery"
+  ],
+  "author": "BloxBeam Team",
+  "license": "MIT"
+}
