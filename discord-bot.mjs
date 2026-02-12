@@ -19,6 +19,7 @@ const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const SERVER_ID = process.env.DISCORD_SERVER_ID;
 const BACKEND_URL = process.env.BACKEND_URL || 'https://bloxbeam-backend.vercel.app';
+const WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || DISCORD_BOT_TOKEN;
 
 // Validate required env vars
 if (!DISCORD_BOT_TOKEN) {
@@ -666,6 +667,8 @@ async function createCustomerOrderThread(guild, member, order) {
   await axios.patch(`${BACKEND_URL}/api/orders/${orderId}`, {
     discordThreadId: orderThread.id,
     discordThreadUrl: threadUrl
+  }, {
+    headers: { 'X-Webhook-Secret': WEBHOOK_SECRET }
   }).catch(e => console.warn(`⚠️ Could not save thread URL to backend:`, e.message));
   console.log(`💾 Saved thread URL: ${threadUrl}`);
   
@@ -922,6 +925,9 @@ async function handleCompleteOrder(interaction, orderId) {
         deliveryStep: 'COMPLETE',
         completedAt: new Date().toISOString(),
         completedBy: String(interaction.user.id)
+      },
+      {
+        headers: { 'X-Webhook-Secret': WEBHOOK_SECRET }
       }
     );
     
@@ -932,6 +938,8 @@ async function handleCompleteOrder(interaction, orderId) {
     await axios.post(`${BACKEND_URL}/api/orders/${orderId}/delivery-state`, {
       action: 'DELIVERY_COMPLETED',
       step: 'COMPLETED'
+    }, {
+      headers: { 'X-Webhook-Secret': WEBHOOK_SECRET }
     }).catch(() => {});
     
     // DELETE all threads for this order (this also sends the delivery DM to customer)
@@ -1179,6 +1187,8 @@ app.post('/webhook/create-ticket', async (req, res) => {
     // Save Discord ID to database
     await axios.patch(`${BACKEND_URL}/api/orders/${order_id}`, {
       discordId: String(user_id)
+    }, {
+      headers: { 'X-Webhook-Secret': WEBHOOK_SECRET }
     }).catch(() => {});
     
     const guild = client.guilds.cache.get(SERVER_ID);
