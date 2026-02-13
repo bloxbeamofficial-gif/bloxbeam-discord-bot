@@ -21,6 +21,11 @@ const SERVER_ID = process.env.DISCORD_SERVER_ID;
 const BACKEND_URL = process.env.BACKEND_URL || 'https://bloxbeam-backend.vercel.app';
 const WEBHOOK_SECRET = process.env.INTERNAL_WEBHOOK_SECRET || DISCORD_BOT_TOKEN;
 
+// Role IDs from .env (use existing server roles instead of creating new ones)
+const STAFF_ROLE_ID = process.env.DISCORD_STAFF_ROLE_ID;    // Owner role
+const CUSTOMER_ROLE_ID = process.env.DISCORD_CUSTOMER_ROLE_ID; // Client role
+const CLAIM_HERE_CHANNEL_ID = process.env.DISCORD_CLAIM_HERE_CHANNEL_ID; // Existing claim-here channel
+
 // Validate required env vars
 if (!DISCORD_BOT_TOKEN) {
   console.error('❌ DISCORD_BOT_TOKEN not set in .env.local');
@@ -55,8 +60,7 @@ const activeOrders = new Map();
 // Lock to prevent duplicate thread creation
 const threadCreationLocks = new Set();
 
-// Store Staff role ID for permission checks (set on bot ready)
-let STAFF_ROLE_ID = null;
+// STAFF_ROLE_ID and CUSTOMER_ROLE_ID are loaded from env vars above
 
 // Helper: delay function for rate limiting
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -230,75 +234,50 @@ client.once('ready', async () => {
     await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, SERVER_ID), { body: commands });
     console.log('✅ Slash commands registered!');
     
-    // Get or create Staff role
-    let staffRole = guild.roles.cache.find(r => r.name === 'Staff');
-    if (!staffRole) {
-      staffRole = await guild.roles.create({
-        name: 'Staff',
-        color: 0xFF0000,
-        permissions: ['ViewChannel', 'ManageChannels', 'ManageMessages']
-      });
-      console.log('✅ Created Staff role');
-    }
-    // Store staff role ID globally for permission checks
-    STAFF_ROLE_ID = staffRole.id;
-    console.log(`✅ Staff role ID: ${STAFF_ROLE_ID}`);
-    
-    // Get or create Customer role
-    let customerRole = guild.roles.cache.find(r => r.name === 'Customer');
-    if (!customerRole) {
-      customerRole = await guild.roles.create({
-        name: 'Customer',
-        color: 0x0099FF,
-        permissions: []
-      });
-      console.log('✅ Created Customer role');
-    }
-    
-    // =================================================
-    // CLAIM-HERE CHANNEL (single channel for all orders - threads per order)
-    // =================================================
-    let claimHereChannel = guild.channels.cache.find(
-      ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText
-    );
-    
-    if (!claimHereChannel) {
-      claimHereChannel = await guild.channels.create({
-        name: 'claim-here',
-        type: ChannelType.GuildText,
-        topic: '📦 Order Claims - Check your DMs with our bot to claim your items!',
-        permissionOverwrites: [
-          { id: SERVER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] }, // Everyone can see, can't send
-          { id: staffRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads] },
-          { id: botUserId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageThreads, PermissionFlagsBits.CreatePrivateThreads, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] }
-        ]
-      });
-      console.log('✅ Created claim-here channel');
-      
-      // Send welcome message
-      await claimHereChannel.send({
-        embeds: [{
-          title: '🎮 Welcome to BloxBeam Orders!',
-          description: 'Thank you for your purchase! Here\'s how to claim your items:',
-          color: 0x3DFF88,
-          fields: [
-            { name: '📩 Step 1: Check Your DMs', value: 'Our bot sent you a private message with your order details and a link to your private thread.', inline: false },
-            { name: '🧵 Step 2: Open Your Thread', value: 'Click the thread link in your DM to access your private order thread where staff will assist you.', inline: false },
-            { name: '🎁 Step 3: Receive Delivery', value: 'A staff member will join your thread and provide a private server link for delivery.', inline: false },
-            { name: '❓ Need Help?', value: 'If you didn\'t receive a DM, make sure your DMs are open and contact a staff member!', inline: false }
-          ],
-          footer: { text: 'Your order thread is private - only you and staff can see it!' },
-          timestamp: new Date().toISOString()
-        }]
-      });
+    // Use existing server roles from env vars (no role creation)
+    const staffRole = STAFF_ROLE_ID ? guild.roles.cache.get(STAFF_ROLE_ID) : null;
+    const customerRole = CUSTOMER_ROLE_ID ? guild.roles.cache.get(CUSTOMER_ROLE_ID) : null;
+    if (staffRole) {
+      console.log(`✅ Staff role: ${staffRole.name} (${staffRole.id})`);
     } else {
-      // Update permissions on existing channel
-      await claimHereChannel.permissionOverwrites.set([
-        { id: SERVER_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] },
-        { id: staffRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads] },
-        { id: botUserId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageThreads, PermissionFlagsBits.CreatePrivateThreads, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] }
-      ]);
-      console.log('✅ Updated claim-here channel permissions');
+      console.warn('⚠️ DISCORD_STAFF_ROLE_ID not set or role not found — staff features disabled');
+    }
+    if (customerRole) {
+      console.log(`✅ Customer role: ${customerRole.name} (${customerRole.id})`);
+    } else {
+      console.warn('⚠️ DISCORD_CUSTOMER_ROLE_ID not set or role not found — auto-assign disabled');
+    }
+    
+    // =================================================
+    // CLAIM-HERE CHANNEL (use existing channel from env)
+    // =================================================
+    let claimHereChannel = CLAIM_HERE_CHANNEL_ID 
+      ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID) 
+      : guild.channels.cache.find(ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText);
+    
+    if (claimHereChannel) {
+      // Ensure bot has correct permissions on the existing channel
+      await claimHereChannel.permissionOverwrites.edit(botUserId, {
+        ViewChannel: true,
+        SendMessages: true,
+        ManageChannels: true,
+        ManageThreads: true,
+        CreatePrivateThreads: true,
+        ReadMessageHistory: true,
+        ManageMessages: true
+      }).catch(e => console.warn('⚠️ Could not update bot permissions on claim-here:', e.message));
+      if (staffRole) {
+        await claimHereChannel.permissionOverwrites.edit(staffRole.id, {
+          ViewChannel: true,
+          ReadMessageHistory: true,
+          SendMessages: true,
+          SendMessagesInThreads: true,
+          ManageThreads: true
+        }).catch(e => console.warn('⚠️ Could not update staff permissions on claim-here:', e.message));
+      }
+      console.log(`✅ Using existing claim-here channel: #${claimHereChannel.name} (${claimHereChannel.id})`);
+    } else {
+      console.error('❌ claim-here channel not found! Set DISCORD_CLAIM_HERE_CHANNEL_ID in .env');
     }
     
     // =================================================
@@ -375,9 +354,9 @@ client.once('ready', async () => {
     // CLEANUP: Delete empty threads (no order embeds)
     // =================================================
     try {
-      const claimHereChannel = guild.channels.cache.find(
-        ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText
-      );
+      const claimHereChannel = CLAIM_HERE_CHANNEL_ID
+        ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID)
+        : guild.channels.cache.find(ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText);
       
       if (claimHereChannel) {
         console.log('🧹 Scanning for empty threads to clean up...');
@@ -431,9 +410,9 @@ client.on('guildMemberAdd', async (member) => {
     console.log(`👋 New member: ${member.user.tag} (ID: ${member.id})`);
     
     const guild = member.guild;
-    const customerRole = guild.roles.cache.find(r => r.name === 'Customer');
+    const customerRole = CUSTOMER_ROLE_ID ? guild.roles.cache.get(CUSTOMER_ROLE_ID) : null;
     
-    // Assign Customer role
+    // Assign Customer/Client role
     if (customerRole) {
       await member.roles.add(customerRole);
     }
@@ -470,43 +449,16 @@ async function createCustomerOrderThread(guild, member, order) {
   
   console.log(`📝 Creating thread for order ${orderId}...`);
   
-  const staffRole = guild.roles.cache.find(r => r.name === 'Staff');
+  const staffRole = STAFF_ROLE_ID ? guild.roles.cache.get(STAFF_ROLE_ID) : null;
   
   // Find claim-here channel
-  let claimHereChannel = guild.channels.cache.find(
-    ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText
-  );
+  let claimHereChannel = CLAIM_HERE_CHANNEL_ID
+    ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID)
+    : guild.channels.cache.find(ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText);
   
   if (!claimHereChannel) {
-    // Create claim-here channel if it doesn't exist
-    claimHereChannel = await guild.channels.create({
-      name: 'claim-here',
-      type: ChannelType.GuildText,
-      topic: '📦 Order Claims - Check your DMs with our bot to claim your items!',
-      permissionOverwrites: [
-        { id: guild.roles.everyone.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] },
-        { id: staffRole?.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.SendMessages, PermissionFlagsBits.SendMessagesInThreads, PermissionFlagsBits.ManageThreads] },
-        { id: botUserId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageThreads, PermissionFlagsBits.CreatePrivateThreads, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages] }
-      ].filter(p => p.id)
-    });
-    console.log('✅ Created claim-here channel');
-    
-    // Send welcome message
-    await claimHereChannel.send({
-      embeds: [{
-        title: '🎮 Welcome to BloxBeam Orders!',
-        description: 'Thank you for your purchase! Here\'s how to claim your items:',
-        color: 0x3DFF88,
-        fields: [
-          { name: '📩 Step 1: Check Your DMs', value: 'Our bot sent you a private message with your order details and a link to your private thread.', inline: false },
-          { name: '🧵 Step 2: Open Your Thread', value: 'Click the thread link in your DM to access your private order thread where staff will assist you.', inline: false },
-          { name: '🎁 Step 3: Receive Delivery', value: 'A staff member will join your thread and provide a private server link for delivery.', inline: false },
-          { name: '❓ Need Help?', value: 'If you didn\'t receive a DM, make sure your DMs are open and contact a staff member!', inline: false }
-        ],
-        footer: { text: 'Your order thread is private - only you and staff can see it!' },
-        timestamp: new Date().toISOString()
-      }]
-    });
+    console.error('❌ claim-here channel not found! Set DISCORD_CLAIM_HERE_CHANNEL_ID in .env');
+    return null;
   }
   
   // Check if thread already exists
@@ -710,7 +662,7 @@ async function completeOrder(guild, orderId, completedBy) {
     const dashboardCategory = guild.channels.cache.find(
       ch => ch.name === 'Dashboard' && ch.type === ChannelType.GuildCategory
     );
-    const staffRole = guild.roles.cache.find(r => r.name === 'Staff');
+    const staffRole = STAFF_ROLE_ID ? guild.roles.cache.get(STAFF_ROLE_ID) : null;
     const botUserId = guild.client.user.id;
     
     orderSavedChannel = await guild.channels.create({
@@ -800,12 +752,11 @@ async function completeOrder(guild, orderId, completedBy) {
           try {
             const threadMembers = await thread.members.fetch();
             // Find customer (not staff, not bot)
-            const staffRole = guild.roles.cache.find(r => r.name === 'Staff');
             for (const [memberId, threadMember] of threadMembers) {
               if (memberId === guild.client.user.id) continue; // Skip bot
               const guildMember = await guild.members.fetch(memberId).catch(() => null);
               if (!guildMember) continue;
-              if (staffRole && guildMember.roles.cache.has(staffRole.id)) continue; // Skip staff
+              if (STAFF_ROLE_ID && guildMember.roles.cache.has(STAFF_ROLE_ID)) continue; // Skip staff
               
               // This is the customer - send DM
               await guildMember.user.send({
@@ -1313,7 +1264,7 @@ app.post('/webhook/create-ticket', async (req, res) => {
     // NOTIFY STAFF - Channel ping + DM all staff
     // =================================================
     try {
-      const staffRole = guild.roles.cache.find(r => r.name === 'Staff');
+      const staffRole = STAFF_ROLE_ID ? guild.roles.cache.get(STAFF_ROLE_ID) : null;
       
       // Build staff notification fields
       const staffNotifyFields = [
@@ -1401,9 +1352,9 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-const PORT = process.env.WEBHOOK_PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`✅ Webhook server running on http://localhost:${PORT}`);
+const PORT = process.env.PORT || process.env.WEBHOOK_PORT || 5000;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Webhook server running on port ${PORT}`);
 });
 
 // Login
