@@ -276,6 +276,32 @@ client.once('ready', async () => {
         }).catch(e => console.warn('⚠️ Could not update staff permissions on claim-here:', e.message));
       }
       console.log(`✅ Using existing claim-here channel: #${claimHereChannel.name} (${claimHereChannel.id})`);
+      
+      // Send welcome embed if channel has no bot messages yet
+      try {
+        const messages = await claimHereChannel.messages.fetch({ limit: 10 });
+        const hasBotEmbed = messages.some(m => m.author.id === botUserId && m.embeds.length > 0);
+        if (!hasBotEmbed) {
+          await claimHereChannel.send({
+            embeds: [{
+              title: '🎮 Welcome to BloxBeam Orders!',
+              description: 'Thank you for your purchase! Here\'s how to claim your items:',
+              color: 0x3DFF88,
+              fields: [
+                { name: '📩 Step 1: Check Your DMs', value: 'Our bot sent you a private message with your order details and a link to your private thread.', inline: false },
+                { name: '🧵 Step 2: Open Your Thread', value: 'Click the thread link in your DM to access your private order thread where staff will assist you.', inline: false },
+                { name: '🎁 Step 3: Receive Delivery', value: 'A staff member will join your thread and provide a private server link for delivery.', inline: false },
+                { name: '❓ Need Help?', value: 'If you didn\'t receive a DM, make sure your DMs are open and contact a staff member!', inline: false }
+              ],
+              footer: { text: 'Your order thread is private - only you and staff can see it!' },
+              timestamp: new Date().toISOString()
+            }]
+          });
+          console.log('✅ Sent welcome embed to claim-here channel');
+        }
+      } catch (e) {
+        console.warn('⚠️ Could not send welcome embed:', e.message);
+      }
     } else {
       console.error('❌ claim-here channel not found! Set DISCORD_CLAIM_HERE_CHANNEL_ID in .env');
     }
