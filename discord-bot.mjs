@@ -253,7 +253,7 @@ client.once('ready', async () => {
     // =================================================
     let claimHereChannel = CLAIM_HERE_CHANNEL_ID 
       ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID) 
-      : guild.channels.cache.find(ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText);
+      : guild.channels.cache.find(ch => ch.name.includes('claim-here') && ch.type === ChannelType.GuildText);
     
     if (claimHereChannel) {
       // Ensure bot has correct permissions on the existing channel
@@ -319,9 +319,9 @@ client.once('ready', async () => {
         type: ChannelType.GuildCategory,
         permissionOverwrites: [
           { id: SERVER_ID, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: staffRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
-          { id: customerRole.id, deny: [PermissionFlagsBits.ViewChannel] }
-        ]
+          staffRole ? { id: staffRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] } : null,
+          customerRole ? { id: customerRole.id, deny: [PermissionFlagsBits.ViewChannel] } : null
+        ].filter(Boolean)
       });
       console.log('✅ Created Dashboard category');
     }
@@ -341,10 +341,10 @@ client.once('ready', async () => {
         topic: '📋 Completed order logs - All delivered orders are saved here',
         permissionOverwrites: [
           { id: SERVER_ID, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: staffRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] },
-          { id: customerRole.id, deny: [PermissionFlagsBits.ViewChannel] },
+          staffRole ? { id: staffRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory], deny: [PermissionFlagsBits.SendMessages] } : null,
+          customerRole ? { id: customerRole.id, deny: [PermissionFlagsBits.ViewChannel] } : null,
           { id: botUserId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-        ]
+        ].filter(Boolean)
       });
       console.log('✅ Created order-saved channel');
     }
@@ -364,10 +364,10 @@ client.once('ready', async () => {
         topic: '🔔 New order notifications - Staff get pinged here for new orders',
         permissionOverwrites: [
           { id: SERVER_ID, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: staffRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
-          { id: customerRole.id, deny: [PermissionFlagsBits.ViewChannel] },
+          staffRole ? { id: staffRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] } : null,
+          customerRole ? { id: customerRole.id, deny: [PermissionFlagsBits.ViewChannel] } : null,
           { id: botUserId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-        ]
+        ].filter(Boolean)
       });
       console.log('✅ Created new-orders channel');
     }
@@ -382,7 +382,7 @@ client.once('ready', async () => {
     try {
       const claimHereChannel = CLAIM_HERE_CHANNEL_ID
         ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID)
-        : guild.channels.cache.find(ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText);
+        : guild.channels.cache.find(ch => ch.name.includes('claim-here') && ch.type === ChannelType.GuildText);
       
       if (claimHereChannel) {
         console.log('🧹 Scanning for empty threads to clean up...');
@@ -442,10 +442,65 @@ client.on('guildMemberAdd', async (member) => {
     if (customerRole) {
       await member.roles.add(customerRole);
     }
-    
-    // Don't check for old orders - new orders will trigger their own DM via webhook
-    // When a customer joins, we just assign the Customer role and wait for new orders
     console.log(`✅ Customer role assigned to ${member.user.tag}`);
+    
+    // Check if this user has any pending orders that need threads created
+    // (handles edge case: webhook fired while user wasn't in server yet)
+    try {
+      const cachedOrders = [...activeOrders.entries()].filter(([, data]) => data.user_id === member.id);
+      if (cachedOrders.length > 0) {
+        console.log(`📦 Found ${cachedOrders.length} pending order(s) for new member ${member.user.tag}`);
+        for (const [orderId, orderData] of cachedOrders) {
+          try {
+            // Fetch full order details from backend
+            const orderResponse = await axios.get(`${BACKEND_URL}/api/orders/${orderId}`, {
+              headers: { 'X-Webhook-Secret': WEBHOOK_SECRET }
+            }).catch(() => null);
+            
+            const order = orderResponse?.data || {
+              orderId,
+              email: orderData.email,
+              productSummary: orderData.product,
+              robloxUsername: orderData.roblox_username,
+              status: 'PROCESSING',
+              createdAt: new Date()
+            };
+            
+            // Only create thread if order isn't already delivered
+            if (order.status !== 'DELIVERED' && order.status !== 'CANCELLED') {
+              const customerThread = await createCustomerOrderThread(guild, member, { ...order, orderId });
+              if (customerThread) {
+                console.log(`✅ Created pending order thread for ${member.user.tag}: ${orderId}`);
+                // DM customer with thread link
+                try {
+                  const threadUrl = `https://discord.com/channels/${guild.id}/${customerThread.id}`;
+                  await member.user.send({
+                    embeds: [{
+                      title: '🎉 Order Thread Ready!',
+                      description: `Welcome to the server! Your order thread is ready.\n\n🧵 **[Click here to open your thread](${threadUrl})**`,
+                      color: 0x3DFF88,
+                      fields: [
+                        { name: '📋 Order ID', value: `\`${orderId}\``, inline: true }
+                      ],
+                      footer: { text: 'BloxBeam • Your items will be delivered soon! 💚' },
+                      timestamp: new Date().toISOString()
+                    }]
+                  });
+                } catch (dmErr) {
+                  console.warn(`⚠️ Could not DM new member:`, dmErr.message);
+                }
+              }
+            }
+            // Remove from cache after processing
+            activeOrders.delete(orderId);
+          } catch (orderErr) {
+            console.warn(`⚠️ Error creating thread for pending order ${orderId}:`, orderErr.message);
+          }
+        }
+      }
+    } catch (pendingErr) {
+      console.warn('⚠️ Error checking pending orders:', pendingErr.message);
+    }
     
   } catch (error) {
     console.error('❌ guildMemberAdd error:', error.message);
@@ -480,7 +535,7 @@ async function createCustomerOrderThread(guild, member, order) {
   // Find claim-here channel
   let claimHereChannel = CLAIM_HERE_CHANNEL_ID
     ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID)
-    : guild.channels.cache.find(ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText);
+    : guild.channels.cache.find(ch => ch.name.includes('claim-here') && ch.type === ChannelType.GuildText);
   
   if (!claimHereChannel) {
     console.error('❌ claim-here channel not found! Set DISCORD_CLAIM_HERE_CHANNEL_ID in .env');
@@ -707,16 +762,21 @@ async function completeOrder(guild, orderId, completedBy) {
   // =================================================
   // FIND order threads in claim-here channel
   // =================================================
-  const claimHereChannel = guild.channels.cache.find(
-    ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText
-  );
+  const claimHereChannel = CLAIM_HERE_CHANNEL_ID
+    ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID)
+    : guild.channels.cache.find(ch => ch.name.includes('claim-here') && ch.type === ChannelType.GuildText);
   
   if (claimHereChannel) {
     try {
+      console.log(`🔍 Searching for threads in channel: #${claimHereChannel.name} (${claimHereChannel.id})`);
       const activeThreads = await claimHereChannel.threads.fetchActive();
       const archivedThreads = await claimHereChannel.threads.fetchArchived();
       
       const allThreads = [...activeThreads.threads.values(), ...archivedThreads.threads.values()];
+      console.log(`🔍 Found ${allThreads.length} total thread(s). Looking for suffix "${orderSuffix6}"...`);
+      if (allThreads.length > 0) {
+        console.log(`🔍 Thread names: ${allThreads.map(t => t.name).join(', ')}`);
+      }
       const orderThreads = allThreads.filter(t => t.name.includes(orderSuffix6));
       
       for (const thread of orderThreads) {
@@ -827,6 +887,9 @@ async function completeOrder(guild, orderId, completedBy) {
     } catch (e) {
       console.warn(`⚠️ Error with threads:`, e.message);
     }
+  } else {
+    console.error(`❌ Could not find claim-here channel! CLAIM_HERE_CHANNEL_ID=${CLAIM_HERE_CHANNEL_ID}`);
+    console.error(`   Available channels: ${guild.channels.cache.filter(ch => ch.type === ChannelType.GuildText).map(ch => `#${ch.name} (${ch.id})`).join(', ')}`);
   }
   
   return deletedCount;
@@ -981,9 +1044,9 @@ async function handleNotifyCustomer(interaction) {
     const orderSuffix6 = orderId.slice(-6).toUpperCase();
     
     // Find claim-here channel
-    const claimHereChannel = guild.channels.cache.find(
-      ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText
-    );
+    const claimHereChannel = CLAIM_HERE_CHANNEL_ID
+      ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID)
+      : guild.channels.cache.find(ch => ch.name.includes('claim-here') && ch.type === ChannelType.GuildText);
     
     if (!claimHereChannel) {
       return await interaction.editReply({ content: '❌ claim-here channel not found' });
@@ -1058,9 +1121,9 @@ async function handleSendServerLink(interaction) {
     const orderSuffix6 = orderId.slice(-6).toUpperCase();
     
     // Find claim-here channel
-    const claimHereChannel = guild.channels.cache.find(
-      ch => ch.name === 'claim-here' && ch.type === ChannelType.GuildText
-    );
+    const claimHereChannel = CLAIM_HERE_CHANNEL_ID
+      ? guild.channels.cache.get(CLAIM_HERE_CHANNEL_ID)
+      : guild.channels.cache.find(ch => ch.name.includes('claim-here') && ch.type === ChannelType.GuildText);
     
     if (!claimHereChannel) {
       return await interaction.editReply({ content: '❌ claim-here channel not found' });
